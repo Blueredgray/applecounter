@@ -135,6 +135,53 @@ def complete(job: dict) -> bool:
         return False
 
 
+def cache_file_for_job(job: dict) -> Path | None:
+    for override in job["overrides"]:
+        if override.startswith("detector.cache_file="):
+            return Path(override.split("=", 1)[1])
+    return None
+
+
+def cache_mismatch(cache_path: Path, expected_metadata: dict) -> str | None:
+    """Вернуть причину несовместимости кэша; None означает, что reuse безопасен."""
+    from applecounter.detect.cache import DetectionCache
+
+    try:
+        DetectionCache.load(cache_path, expected_metadata=expected_metadata)
+    except (OSError, ValueError) as exc:
+        return str(exc)
+    return None
+
+
+def expected_cache_metadata(job: dict, cache: dict) -> dict:
+    """Метаданные кэша для job; кэшируются по детекционной части конфигурации."""
+    from applecounter.config import load_config
+    from applecounter.utils.provenance import detection_cache_metadata
+
+    cache_overrides = tuple(
+        override for override in job["overrides"]
+        if override.startswith(("detector.", "video.frame_stride", "video.resize",
+                                "video.rotate90", "video.max_frames"))
+    )
+    if cache_overrides not in cache:
+        cfg = load_config(str(CONFIG), list(cache_overrides))
+        cache[cache_overrides] = detection_cache_metadata(cfg, job["source"])
+    return cache[cache_overrides]
+
+
+def prepare_cache(job: dict, metadata_cache: dict, dry_run: bool = False) -> str | None:
+    """Удалить несовместимый кэш только для незавершённой/перезапускаемой задачи."""
+    cache_path = cache_file_for_job(job)
+    if cache_path is None or not cache_path.exists():
+        return None
+    reason = cache_mismatch(cache_path, expected_cache_metadata(job, metadata_cache))
+    if reason is None:
+        return None
+    if not dry_run:
+        cache_path.unlink(missing_ok=True)
+    return f"{cache_path}: {reason}"
+
+
 def log(message: str) -> None:
     line = f"{time.strftime('%Y-%m-%d %H:%M:%S')} | {message}"
     print(line, flush=True)
@@ -197,7 +244,16 @@ def main() -> int:
         parser.error("frame-stride и max-frames должны быть положительными")
 
     all_jobs = jobs(args.dataset, args.only, args.max_frames, args.frame_stride)
-    pending = all_jobs if args.rerun else [job for job in all_jobs if not complete(job)]
+    metadata_cache: dict = {}
+    pending: list[dict] = []
+    for job in all_jobs:
+        if not args.rerun and complete(job):
+            continue
+        stale = prepare_cache(job, metadata_cache, dry_run=args.dry_run)
+        if stale:
+            action = "будет пересоздан" if args.dry_run else "пересоздан"
+            log(f"несовместимый кэш {action}: {stale}")
+        pending.append(job)
     log(f"выбрано {len(all_jobs)}; к выполнению {len(pending)}; старые outputs не используются")
     if args.dry_run:
         for job in pending:

@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -228,3 +229,35 @@ def test_yield_cli_accepts_external_validation_csv(tmp_path):
     assert result["method"] == "regression"
     assert result["estimate_type"] == "field_calibrated_external_holdout"
     assert result["params"]["validation"]["method"] == "external_holdout"
+
+
+def test_run_matrix_removes_incompatible_cache_for_pending_job(tmp_path, monkeypatch):
+    import importlib.util
+
+    from applecounter.detect.cache import DetectionCache
+
+    spec = importlib.util.spec_from_file_location(
+        "run_matrix", Path(__file__).resolve().parents[1] / "scripts" / "run_matrix.py",
+    )
+    run_matrix = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(run_matrix)
+
+    cache_path = tmp_path / "detections.npz"
+    stale = DetectionCache({
+        "detector": "fixed",
+        "video": {"frame_stride": 1, "resize": None, "rotate90": 0, "max_frames": 12},
+    })
+    stale.add(0, np.zeros((0, 6), dtype=np.float32))
+    stale.save(cache_path)
+
+    job = {"overrides": [f"detector.cache_file={cache_path}"]}
+    monkeypatch.setattr(
+        run_matrix, "expected_cache_metadata",
+        lambda _job, _cache: {
+            "detector": "fixed",
+            "video": {"frame_stride": 1, "resize": None, "rotate90": 0, "max_frames": None},
+        },
+    )
+    reason = run_matrix.prepare_cache(job, {})
+    assert reason and "configuration mismatch" in reason
+    assert not cache_path.exists()
