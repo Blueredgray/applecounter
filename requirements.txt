@@ -1,0 +1,11 @@
+numpy>=1.23
+opencv-python>=4.7
+scipy>=1.9
+pandas>=1.5
+PyYAML>=6.0
+matplotlib>=3.6
+pytest>=7.0
+
+# --- опционально (детектор YOLO и обучение) ---
+# ultralytics>=8.0
+# torch>=2.0

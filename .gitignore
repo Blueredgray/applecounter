@@ -1,0 +1,32 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.venv/
+venv/
+
+# данные (скачиваются/генерируются отдельно)
+data/raw/
+data/processed/
+data/synthetic/
+weights/
+*.pt
+*.onnx
+
+# результаты запусков
+outputs/
+runs/
+
+# LaTeX
+paper/*.aux
+paper/*.log
+paper/*.out
+paper/*.toc
+paper/*.bbl
+paper/*.blg
+paper/*.fls
+paper/*.fdb_latexmk
+paper/*.synctex.gz

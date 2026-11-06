@@ -1,0 +1,14 @@
+# Параметры дообучения детектора (ultralytics YOLOv8) на MinneApple/ACFR
+# Запуск: python -m applecounter train --data data/processed/minneapple/data.yaml --config configs/train_yolo.yaml
+model: yolov8n.pt
+epochs: 80
+imgsz: 640
+batch: 16
+lr0: 0.01
+optimizer: SGD
+patience: 15
+device: auto
+workers: 4
+seed: 42
+name: apples_yolov8n
+close_mosaic: 10

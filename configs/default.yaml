@@ -1,0 +1,95 @@
+# Конфигурация пайплайна подсчёта яблок (пролёт вдоль ряда)
+project:
+  seed: 42
+  device: auto          # auto | cpu | cuda
+
+paths:
+  data_root: data
+  raw_dir: data/raw
+  processed_dir: data/processed
+  synthetic_dir: data/synthetic
+  runs_dir: outputs
+
+video:
+  max_frames: null      # ограничение числа кадров (null = всё видео)
+  frame_stride: 1       # брать каждый n-й кадр
+  resize: null          # [w, h] или null
+  rotate90: 0           # 0 | 1 | -1  (для вертикальных камер, как в VideoFruitCounting)
+  fps: null             # fps результата (null = fps источника)
+
+detector:
+  name: hsv             # hsv (без зависимостей) | yolo (ultralytics)
+  conf_threshold: 0.30
+  nms_iou: 0.40
+  min_area: 24          # мин. площадь бокса, px^2
+  hsv:
+    lower1: [0, 70, 60]
+    upper1: [12, 255, 255]
+    lower2: [168, 70, 60]
+    upper2: [180, 255, 255]
+    close_ksize: 3
+    open_ksize: 1
+    min_area: 24
+    min_circularity: 0.55
+  yolo:
+    weights: weights/apples_yolov8n.pt
+    imgsz: 640
+    conf: 0.25
+    iou: 0.45
+    class_id: 0
+
+stabilizer:
+  enabled: true
+  method: orb           # orb | none
+  max_features: 1500
+  reproj_thresh: 3.0
+  min_matches: 12
+
+tracker:
+  name: ours          # ours | botsort | deepsort
+  high_conf: 0.45
+  low_conf: 0.15
+  min_iou: 0.25
+  max_age: 25           # кадров до перевода трека в lost
+  reid_max_age: 60      # кадров до удаления трека (окно re-ID)
+  n_init: 2             # подтверждений до начисления счёта
+  use_appearance: true
+  appearance_gate: 0.55 # минимальный косинусный сходство для re-ID
+  reid_max_dist: 60     # макс. смещение (мир. px) для re-ID: плод статичен в мире
+  velocity_damping: 0.7
+
+trees:
+  method: auto          # auto | axis | segments | boundaries | fixed
+  gap_ratio: 0.20       # порог доли от пика плотности для «просвета» между кронами
+  min_points: 12        # мин. точек в кластере, чтобы считать его деревом
+  min_span: 40          # мин. ширина кластера, мир. ед.
+  smooth_sigma: 7.0     # сглаживание профиля плотности
+  n_trees: null         # задать вручную (метод fixed)
+  segments_file: null   # CSV в формате VideoFruitCounting: video,f0,f1,...
+  boundaries_file: null # JSON: [{"lo": x, "hi": y}, ...] в мир. координатах
+
+counting:
+  min_obs: 2            # мин. наблюдений трека, чтобы он попал в отчёт
+  merge_dist: 14        # слияние осколков одного плода (мир. px); разные плоды дальше
+
+yield:
+  method: physical      # physical | regression
+  mean_mass_g: 180.0    # средняя масса одного яблока, г
+  visibility_factor: 1.0  # доля видимых яблок (калибровка по полевому контролю)
+  visibility_sigma: 0.08
+  mass_sigma_g: 25.0
+  regression_csv: null  # CSV: tree_id,count,mass_kg — подгонка линейной модели
+  ridge_lambda: 1.0e-3
+  confidence: 0.95
+
+eval:
+  iou_match: 0.50
+  count_tolerance: 3    # «точных» деревьев: |pred-gt| <= tolerance
+
+output:
+  save_video: true
+  save_mosaic: true
+  save_figures: true
+  annotate_ids: true
+  mosaic_stride: 4      # каждый n-й кадр в мозаику
+  mosaic_scale: 0.5
