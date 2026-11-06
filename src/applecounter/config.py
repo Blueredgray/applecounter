@@ -26,6 +26,7 @@ DEFAULTS: dict = {
     },
     "detector": {
         "name": "hsv",
+        "cache_file": None,
         "conf_threshold": 0.30,
         "nms_iou": 0.40,
         "min_area": 24,
@@ -76,25 +77,25 @@ DEFAULTS: dict = {
         "n_trees": None,
         "segments_file": None,
         "boundaries_file": None,
+        "assignment": "median_frame",  # segments: median_frame | vfc_reference
         # посегментное разбиение (метод segments) на отдельные деревья:
         # каждый сегмент (stretch) делится на n = длина/шаг равных отрезков
-        "subdivide": True,
-        # шаг и диаметр подобраны под сад датасета VFC (IRTA Mollerussa,
-        # Story Inored, fruiting wall): 1.0 м в ряду x 3.6 м междурядье;
-        # stretch = 5 м = 5 деревьев; опорный диаметр 70 мм даёт масштаб,
-        # при котором средняя длина stretch'а (~2095 px) = 5.0 м
-        "spacing_m": 1.0,            # шаг между деревьями вдоль ряда, м
-        "apple_diameter_mm": 70.0,   # опорный диаметр яблока для оценки px/м
-        "trees_per_stretch": 0,      # >0 — фиксированное число деревьев в сегменте
+        # Optional experimental subdivision; it is not a measured tree map.
+        "subdivide": False,
+        "spacing_m": 1.0,
+        "apple_diameter_mm": 70.0,
+        "trees_per_stretch": 0,
     },
-    "counting": {"min_obs": 2, "merge_dist": 14.0},
+    "counting": {"min_obs": 2, "merge_dist": 0.0},
     "yield": {
+        "enabled": True,
         "method": "physical",
         "mean_mass_g": 180.0,
         "visibility_factor": 1.0,
         "visibility_sigma": 0.08,
         "mass_sigma_g": 25.0,
         "regression_csv": None,
+        "validation_csv": None,
         "ridge_lambda": 1.0e-3,
         "confidence": 0.95,
     },

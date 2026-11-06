@@ -35,7 +35,7 @@ def tiny_run(tiny_synth, tmp_path_factory) -> dict:
     from applecounter.pipeline import run_video
 
     out = tmp_path_factory.mktemp("run")
-    cfg = load_config(overrides=["output.save_mosaic=false"])
+    cfg = load_config(overrides=["output.save_mosaic=false", "counting.merge_dist=14"])
     summary = run_video(cfg, tiny_synth["video"], str(out), gt_dir=tiny_synth["gt_dir"])
     summary["_out"] = str(out)
     return summary

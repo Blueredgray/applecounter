@@ -18,10 +18,11 @@ video:
   fps: null             # fps результата (null = fps источника)
 
 detector:
-  name: hsv             # hsv (без зависимостей) | yolo (ultralytics)
+  name: hsv             # hsv | yolo
+  cache_file: null      # общий NPZ для одинаковых детекций разных трекеров
   conf_threshold: 0.30
   nms_iou: 0.40
-  min_area: 24          # мин. площадь бокса, px^2
+  min_area: 24
   hsv:
     lower1: [0, 70, 60]
     upper1: [12, 255, 255]
@@ -38,47 +39,74 @@ detector:
     iou: 0.45
     class_id: 0
 
+train:
+  workers: 4
+  resume: false
+  optimizer: auto
+  lr0: 0.01
+  lrf: 0.01
+  momentum: 0.937
+  weight_decay: 0.0005
+  patience: 50
+  close_mosaic: 10
+  deterministic: true
+
 stabilizer:
   enabled: true
-  method: orb           # orb | none
+  method: orb           # orb | none; только для ours/*_lite
   max_features: 1500
   reproj_thresh: 3.0
   min_matches: 12
 
 tracker:
-  name: ours          # ours | botsort | deepsort
+  name: ours          # ours | botsort | bytetrack | deepsort | botsort_lite | deepsort_lite
   high_conf: 0.45
   low_conf: 0.15
   min_iou: 0.25
-  max_age: 25           # кадров до перевода трека в lost
-  reid_max_age: 60      # кадров до удаления трека (окно re-ID)
-  n_init: 2             # подтверждений до начисления счёта
-  use_appearance: true
-  appearance_gate: 0.55 # минимальный косинусный сходство для re-ID
-  reid_max_dist: 60     # макс. смещение (мир. px) для re-ID: плод статичен в мире
-  velocity_damping: 0.7
+  max_age: 25
+  reid_max_age: 60      # ours/*_lite
+  n_init: 2
+  use_appearance: true  # ours/*_lite
+  appearance_gate: 0.55 # ours/*_lite; порог BoxMOT
+  reid_max_dist: 60     # ours/*_lite
+  velocity_damping: 0.7 # ours/*_lite
+  cmc_enabled: true     # BoT-SORT; для ByteTrack по умолчанию задать false
+  cmc_method: sof
+  use_embeddings: true  # BoT-SORT
+  max_iou_distance: 0.7 # DeepSORT
+  max_cosine_distance: 0.2
+  nn_budget: 100
+  embedder: mobilenet
+  embedder_half: true
 
 trees:
-  method: auto          # auto | axis | segments | boundaries | fixed
-  gap_ratio: 0.20       # порог доли от пика плотности для «просвета» между кронами
-  min_points: 12        # мин. точек в кластере, чтобы считать его деревом
-  min_span: 40          # мин. ширина кластера, мир. ед.
-  smooth_sigma: 7.0     # сглаживание профиля плотности
-  n_trees: null         # задать вручную (метод fixed)
-  segments_file: null   # CSV в формате VideoFruitCounting: video,f0,f1,...
-  boundaries_file: null # JSON: [{"lo": x, "hi": y}, ...] в мир. координатах
+  method: auto          # none | auto | axis | segments | boundaries | fixed
+  gap_ratio: 0.20
+  min_points: 12
+  min_span: 40
+  smooth_sigma: 7.0
+  n_trees: null
+  segments_file: null   # VFC SFRAME: 22 маркера -> 21 stretch, не деревья
+  boundaries_file: null
+  assignment: median_frame  # для воспроизведения VFC задать vfc_reference
+  subdivide: false      # эвристика не является картой отдельных деревьев
+  spacing_m: 1.0
+  apple_diameter_mm: 70.0
+  trees_per_stretch: 0
 
 counting:
-  min_obs: 2            # мин. наблюдений трека, чтобы он попал в отчёт
-  merge_dist: 14        # слияние осколков одного плода (мир. px); разные плоды дальше
+  min_obs: 2            # фильтр по фактически выданным наблюдениям трека
+  merge_dist: 0         # в основном сравнении post-hoc слияние запрещено
 
 yield:
+  enabled: true         # false для матрицы трекеров без полевой калибровки
   method: physical      # physical | regression
-  mean_mass_g: 180.0    # средняя масса одного яблока, г
-  visibility_factor: 1.0  # доля видимых яблок (калибровка по полевому контролю)
+  mean_mass_g: 180.0
+  visibility_factor: 1.0  # κ — доля видимых; M = N * mean_mass / κ
   visibility_sigma: 0.08
   mass_sigma_g: 25.0
-  regression_csv: null  # CSV: tree_id,count,mass_kg — подгонка линейной модели
+  regression_csv: null  # независимый field train: tree_id,count,mass_kg
+  validation_csv: null  # отдельный field holdout; без него выполняется LOO
   ridge_lambda: 1.0e-3
   confidence: 0.95
 

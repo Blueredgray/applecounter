@@ -3,16 +3,27 @@ from .tracker import MultiObjectTracker, Track, TrackState, TrackView  # noqa: F
 
 
 def build_tracker(cfg):
-    """Фабрика трекеров по конфигурации (tracker.name: ours|botsort|deepsort)."""
+    """Build a tracker without confusing lightweight baselines with reference methods."""
     name = str(cfg.get("tracker.name", "ours")).lower()
     if name in ("ours", "custom", ""):
         return MultiObjectTracker(cfg)
-    if name == "botsort":
-        from .botsort import BotSortTracker
+    if name in ("botsort_lite", "deepsort_lite"):
+        if name == "botsort_lite":
+            from .botsort import BotSortTracker
 
-        return BotSortTracker(cfg)
-    if name == "deepsort":
+            return BotSortTracker(cfg)
         from .deepsort import DeepSortTracker
 
         return DeepSortTracker(cfg)
-    raise ValueError(f"неизвестный трекер: {name} (ожидается ours|botsort|deepsort)")
+    if name in ("botsort", "bytetrack"):
+        from .external import BoxMotTracker
+
+        return BoxMotTracker(cfg, name)
+    if name == "deepsort":
+        from .external import DeepSortRealtimeTracker
+
+        return DeepSortRealtimeTracker(cfg)
+    raise ValueError(
+        f"неизвестный трекер: {name} "
+        "(ours|botsort|bytetrack|deepsort|botsort_lite|deepsort_lite)"
+    )

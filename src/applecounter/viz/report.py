@@ -101,7 +101,19 @@ def fig_pr(preds, gts, path: Path, iou_thr: float = 0.5) -> Path:
 # ---------------------------------------------------------------------------
 # Столбчатые диаграммы
 # ---------------------------------------------------------------------------
-def fig_counts_per_tree(count_result: CountResult, gt_counts: Optional[Dict[int, int]], path: Path) -> Path:
+def unit_label(count_unit: str, plural: bool = False) -> str:
+    """Человекочитаемая единица счёта без подмены stretch отдельным деревом."""
+    labels = {
+        "tree": ("дерево", "деревьям"),
+        "stretch": ("stretch", "stretch"),
+        "sequence": ("последовательность", "последовательностям"),
+    }
+    one, many = labels.get(str(count_unit), (str(count_unit), str(count_unit)))
+    return many if plural else one
+
+
+def fig_counts_per_tree(count_result: CountResult, gt_counts: Optional[Dict[int, int]], path: Path,
+                        count_unit: str = "tree") -> Path:
     keys = sorted(set(count_result.per_tree) | set(gt_counts or {}))
     pred = [count_result.per_tree.get(k, 0) for k in keys]
     fig, ax = plt.subplots(figsize=(max(5, 0.55 * len(keys) + 2), 4))
@@ -113,9 +125,9 @@ def fig_counts_per_tree(count_result: CountResult, gt_counts: Optional[Dict[int,
         ax.bar(x + width / 2, gt, width, label="контроль", color="#f0a35e")
     ax.set_xticks(x)
     ax.set_xticklabels([f"{k}" for k in keys])
-    ax.set_xlabel("№ дерева")
+    ax.set_xlabel(f"№ {unit_label(count_unit)}")
     ax.set_ylabel("Количество яблок")
-    ax.set_title("Подсчёт по деревьям")
+    ax.set_title(f"Подсчёт по {unit_label(count_unit, plural=True)}")
     ax.legend()
     ax.grid(axis="y", alpha=0.3)
     return _save(fig, Path(path))
@@ -131,7 +143,7 @@ def fig_cumulative(per_frame_ids: Sequence[int], path: Path) -> Path:
     return _save(fig, Path(path))
 
 
-def fig_yield(forecast: YieldForecast, path: Path) -> Path:
+def fig_yield(forecast: YieldForecast, path: Path, count_unit: str = "tree") -> Path:
     fig, ax = plt.subplots(figsize=(max(5, 0.55 * len(forecast.points) + 2), 4))
     ids = [p.tree_id for p in forecast.points]
     mass = [p.mass_kg for p in forecast.points]
@@ -140,14 +152,14 @@ def fig_yield(forecast: YieldForecast, path: Path) -> Path:
     ax.bar(x, mass, color="#756bb1", yerr=yerr, capsize=3)
     ax.set_xticks(x)
     ax.set_xticklabels([str(i) for i in ids])
-    ax.set_xlabel("№ дерева")
+    ax.set_xlabel(f"№ {unit_label(count_unit)}")
     ax.set_ylabel("Прогноз массы, кг")
     ax.set_title(f"Прогноз урожая (всего {forecast.total_kg:.1f} кг)")
     ax.grid(axis="y", alpha=0.3)
     return _save(fig, Path(path))
 
 
-def fig_error_per_tree(count_rows: Sequence[dict], path: Path) -> Path:
+def fig_error_per_tree(count_rows: Sequence[dict], path: Path, count_unit: str = "tree") -> Path:
     keys = [r["tree_id"] for r in count_rows]
     errs = [r["error"] for r in count_rows]
     colors = ["#31a354" if e == 0 else ("#e6550d" if abs(e) > 3 else "#3182bd") for e in errs]
@@ -156,9 +168,9 @@ def fig_error_per_tree(count_rows: Sequence[dict], path: Path) -> Path:
     ax.axhline(0, color="black", lw=0.8)
     ax.set_xticks(np.arange(len(keys)))
     ax.set_xticklabels([str(k) for k in keys])
-    ax.set_xlabel("№ дерева")
+    ax.set_xlabel(f"№ {unit_label(count_unit)}")
     ax.set_ylabel("Ошибка счёта")
-    ax.set_title("Ошибка подсчёта по деревьям (расчёт − контроль)")
+    ax.set_title(f"Ошибка подсчёта по {unit_label(count_unit, plural=True)} (расчёт − контроль)")
     ax.grid(axis="y", alpha=0.3)
     return _save(fig, Path(path))
 
@@ -276,11 +288,11 @@ def make_mosaic_figure(
 def fig_pipeline(path: Path) -> Path:
     steps = [
         ("Видео пролёта\nвдоль ряда", "#dbe9f6"),
-        ("Стабилизация\n(ORB, мировые\nкоординаты)", "#e8f5e9"),
-        ("Детекция яблок\n(YOLO / HSV + NMS)", "#fff3e0"),
-        ("Трекинг\nIoU + re-ID\n(уникальные ID)", "#f3e5f5"),
-        ("Карта деревьев\n(плотность точек)", "#e0f7fa"),
-        ("Счёт и прогноз\nурожая, отчёт", "#fce4ec"),
+        ("Детекция яблок\n(HSV / YOLO;\nобщий кэш)", "#fff3e0"),
+        ("Трекинг без повторов\n(ByteTrack /\nBoT-SORT / DeepSORT)", "#f3e5f5"),
+        ("Назначение\nединиц счёта\n(stretch / дерево)", "#e0f7fa"),
+        ("MOT- и count-метрики\n(AP, MOTA, IDF1,\nMAE/RMSE)", "#e8f5e9"),
+        ("Воспроизводимый\nотчёт и манифест", "#fce4ec"),
     ]
     fig, ax = plt.subplots(figsize=(11, 3.2))
     ax.set_xlim(0, 11)
@@ -318,15 +330,23 @@ def write_report(
     figures: Optional[Dict[str, str]] = None,
 ) -> Path:
     out_dir = Path(out_dir)
+    count_unit = str(summary.get("count_unit", "tree"))
+    one = unit_label(count_unit)
+    many = unit_label(count_unit, plural=True)
     lines: List[str] = []
     lines.append("# Отчёт подсчёта яблок\n")
     lines.append(f"- видео: `{summary.get('video', '')}`")
     lines.append(f"- кадров обработано: {summary.get('frames', 0)}")
     lines.append(f"- детектор: {summary.get('detector', '')}")
-    lines.append(f"- деревьев на карте: {summary.get('n_trees', 0)}")
+    if count_unit == "tree":
+        lines.append(f"- деревьев на карте: {summary.get('n_trees', 0)}")
+    elif count_unit == "stretch":
+        lines.append(f"- участков (stretch) на карте: {summary.get('n_trees', 0)}")
+    else:
+        lines.append(f"- единиц на карте: {summary.get('n_trees', 0)}")
     lines.append(f"- найдено уникальных яблок: **{count_result.total}**")
     if count_result.unassigned:
-        lines.append(f"- без привязки к дереву: {count_result.unassigned}")
+        lines.append(f"- без привязки к {one}: {count_result.unassigned}")
 
     if det_metrics:
         lines.append("\n## Детекция\n")
@@ -342,36 +362,38 @@ def write_report(
         lines.append("| метрика | значение |")
         lines.append("|---|---|")
         lines.append(f"| MOTA | {track_metrics['mota']:.3f} |")
+        if "idf1" in track_metrics:
+            lines.append(f"| IDF1 | {track_metrics['idf1']:.3f} |")
         lines.append(f"| подмены ID (IDSW) | {track_metrics['id_switches']} |")
         lines.append(f"| FP / FN | {track_metrics['fp']} / {track_metrics['fn']} |")
 
     if count_metrics:
-        lines.append("\n## Точность счёта по деревьям\n")
+        lines.append(f"\n## Точность счёта по {many}\n")
         lines.append("| метрика | значение |")
         lines.append("|---|---|")
         lines.append(f"| итог расчёт / контроль | {count_metrics['pred_total']} / {count_metrics['gt_total']} |")
         lines.append(f"| ошибка итога, % | {count_metrics['total_error_pct']:.1f} |")
-        lines.append(f"| MAE (на дерево) | {count_metrics['mae']:.2f} |")
+        lines.append(f"| MAE (на единицу) | {count_metrics['mae']:.2f} |")
         lines.append(f"| RMSE | {count_metrics['rmse']:.2f} |")
         lines.append(f"| MAPE, % | {count_metrics['mape']:.1f} |")
         lines.append(f"| смещение (bias) | {count_metrics['bias']:.2f} |")
-        lines.append(f"| деревьев в допуске ±{count_metrics['tolerance']} | {count_metrics['within_tolerance']}/{count_metrics['n_trees']} |")
+        lines.append(f"| единиц в допуске ±{count_metrics['tolerance']} | {count_metrics['within_tolerance']}/{count_metrics['n_trees']} |")
 
-    lines.append("\n## Счёт по деревьям\n")
-    lines.append("| дерево | найдено |")
+    lines.append(f"\n## Счёт по {many}\n")
+    lines.append(f"| {one} | найдено |")
     lines.append("|---|---|")
     for tree_id, cnt in count_result.per_tree.items():
         lines.append(f"| {tree_id} | {cnt} |")
     if 0 in count_result.per_tree:
-        lines.append("\n_дерево 0 — объекты вне карты деревьев (просветы/фон)_")
+        lines.append(f"\n_{one} 0 — объекты вне карты единиц счёта (просветы/фон)_")
 
     if forecast:
-        lines.append(f"\n## Прогноз урожая (метод: {forecast.method})\n")
+        lines.append(f"\n## Прогноз урожая (метод: {forecast.method}; тип: {forecast.estimate_type})\n")
         lines.append(f"- всего: **{forecast.total_kg:.1f} кг** "
                      f"(95% ДИ: {forecast.ci_lo:.1f} … {forecast.ci_hi:.1f} кг)")
         if forecast.params:
             lines.append(f"- параметры: `{json.dumps(forecast.params, ensure_ascii=False)}`")
-        lines.append("\n| дерево | яблок | масса, кг | 95% ДИ |")
+        lines.append(f"\n| {one} | яблок | масса, кг | 95% ДИ |")
         lines.append("|---|---|---|---|")
         for p in forecast.points:
             lines.append(f"| {p.tree_id} | {p.count} | {p.mass_kg:.1f} | {p.ci_lo:.1f} … {p.ci_hi:.1f} |")

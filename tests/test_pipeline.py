@@ -39,7 +39,9 @@ def test_pipeline_end_to_end(tiny_run, tiny_synth):
 
     # -- трекинг: без повторов -------------------------------------------
     tm = summary["tracking_metrics"]
-    assert tm is not None and tm["id_switches"] <= tm["n_gt"] * 0.1, tm
+    assert tm is not None and tm["metric_backend"] == "motmetrics", tm
+    assert tm["mota"] >= 0.7 and tm["idf1"] >= 0.8, tm
+    assert tm["id_switches"] <= tm["n_gt"] * 0.2, tm
 
     # -- прогноз урожая --------------------------------------------------
     y = summary["yield"]

@@ -1,12 +1,14 @@
-"""Полная матрица комбинаций: детекторы x трекеры x датасеты.
+"""Воспроизводимая матрица: общие детекции × внешние BoT-SORT/DeepSORT.
 
-VFC (16 видео): hsv|yolo8n|yolo26s x botsort|deepsort.
-  Комбинация yolo26s+botsort уже выполнена в outputs/vfc_<video> — используем её.
-  Остальные идут в outputs/matrix/<combo>/<video>.
-MinneApple (видео 100 кадров с GT): hsv x botsort|deepsort (остальные уже есть).
+Старые outputs не используются и не перезаписываются. MinneApple-video исключено:
+его COCO annotation ID не являются постоянными track ID, а кадры взяты из train.
+T1 — отдельный MOT-датасет Zenodo 7384297; VFC — 16 видео и 21 stretch.
 
-Пропуск: если summary.json в целевом каталоге уже есть.
-Запуск: python scripts/run_matrix.py [--dry-run] [--only <подстрока>]
+Примеры (из корня проекта, в .venv):
+  python scripts/run_matrix.py --dry-run
+  python scripts/run_matrix.py --dataset vfc --only yolo8n --max-frames 12
+  python scripts/run_matrix.py --dataset t1
+  python scripts/run_matrix.py --dataset vfc
 """
 from __future__ import annotations
 
@@ -18,136 +20,206 @@ import sys
 import time
 from pathlib import Path
 
+import pandas as pd
+
 ROOT = Path(__file__).resolve().parents[1]
+CONFIG = ROOT / "configs" / "default.yaml"
 VFC_ROOT = ROOT / "data" / "raw" / "videofruit" / "Video Fruit Counting"
 SFRAME = VFC_ROOT / "stretch_sframe.csv"
 VIDEOS = VFC_ROOT / "Videos"
-MN_VIDEO = ROOT / "data" / "processed" / "minneapple_video" / "20150919_174730.mp4"
-MN_GT = ROOT / "data" / "processed" / "minneapple_video" / "gt"
-OUT = ROOT / "outputs"
-MATRIX = OUT / "matrix"
-LOG = OUT / "matrix.log"
+T1 = ROOT / "data" / "raw" / "videofruit" / "T1"
+OUT = ROOT / "outputs" / "rework_matrix"
+CACHE = ROOT / "outputs" / "rework_cache"
+LOG = ROOT / "outputs" / "rework_matrix.log"
 
-WEIGHT_8N = "weights/runs/minneapple50/weights/best.pt"
-WEIGHT_26S = "weights/runs/minneapple26s1280/weights/best.pt"
-
-COMBOS = {
-    "hsv_botsort": {"detector": "hsv", "tracker": "botsort"},
-    "hsv_deepsort": {"detector": "hsv", "tracker": "deepsort"},
-    "yolo8n_botsort": {"detector": "yolo8n", "tracker": "botsort"},
-    "yolo8n_deepsort": {"detector": "yolo8n", "tracker": "deepsort"},
-    "yolo26s_botsort": {"detector": "yolo26s", "tracker": "botsort"},
-    "yolo26s_deepsort": {"detector": "yolo26s", "tracker": "deepsort"},
+WEIGHTS = {
+    "yolo8n": (ROOT / "weights/runs/minneapple50/weights/best.pt", 640),
+    "yolo26s": (ROOT / "weights/runs/minneapple26s1280/weights/best.pt", 1280),
 }
+DETECTORS = ("hsv", "yolo8n", "yolo26s")
+TRACKERS = ("botsort", "deepsort")
 
 
-def detector_args(detector: str) -> list[str]:
-    if detector == "hsv":
-        return ["--set", "detector.name=hsv"]
-    if detector == "yolo8n":
-        return ["--set", "detector.name=yolo", "--set", f"detector.yolo.weights={WEIGHT_8N}",
-                "--set", "detector.yolo.imgsz=640"]
-    if detector == "yolo26s":
-        return ["--set", "detector.name=yolo", "--set", f"detector.yolo.weights={WEIGHT_26S}",
-                "--set", "detector.yolo.imgsz=1280"]
-    raise ValueError(detector)
+def detector_overrides(name: str) -> list[str]:
+    if name == "hsv":
+        return ["detector.name=hsv"]
+    weights, imgsz = WEIGHTS[name]
+    if not weights.is_file():
+        raise FileNotFoundError(f"нет весов {name}: {weights}")
+    return [
+        "detector.name=yolo", f"detector.yolo.weights={weights}",
+        f"detector.yolo.imgsz={imgsz}",
+    ]
 
 
 def rotate_for(video_name: str) -> int:
     return 1 if "_z_r" in video_name else -1
 
 
-def run_cmd(cmd: list[str]) -> tuple[int, float]:
+def jobs(dataset: str, only: str, max_frames: int | None, frame_stride: int) -> list[dict]:
+    result = []
+    sources = []
+    if dataset in ("vfc", "all"):
+        videos = sorted(VIDEOS.rglob("*.mp4"))
+        if len(videos) != 16:
+            raise ValueError(f"ожидалось 16 видео VFC, найдено {len(videos)}")
+        sources.extend(("vfc", path, None) for path in videos)
+    if dataset in ("t1", "all"):
+        if not (T1 / "img1").is_dir() or not (T1 / "gt" / "gt.txt").is_file():
+            raise FileNotFoundError(f"T1 должен содержать img1 и gt/gt.txt: {T1}")
+        sources.append(("t1", T1, T1))
+
+    for data_name, source, gt in sources:
+        stem = source.stem
+        for detector in DETECTORS:
+            cache_file = CACHE / data_name / stem / f"{detector}.npz"
+            for tracker in TRACKERS:
+                label = f"{data_name}/{detector}/{tracker}/{stem}"
+                if only and only.lower() not in label.lower():
+                    continue
+                overrides = [
+                    *detector_overrides(detector),
+                    f"tracker.name={tracker}",
+                    "counting.min_obs=1",
+                    "counting.merge_dist=0",
+                    "output.save_video=false",
+                    "output.save_mosaic=false",
+                    "output.save_figures=false",
+                    "yield.enabled=false",
+                    f"detector.cache_file={cache_file}",
+                    f"video.frame_stride={frame_stride}",
+                ]
+                if max_frames is not None:
+                    overrides.append(f"video.max_frames={max_frames}")
+                if data_name == "vfc":
+                    overrides += [
+                        f"video.rotate90={rotate_for(stem)}",
+                        "trees.method=segments",
+                        f"trees.segments_file={SFRAME}",
+                        "trees.assignment=vfc_reference",
+                        "trees.subdivide=false",
+                    ]
+                else:
+                    overrides.append("trees.method=none")
+                result.append({
+                    "dataset": data_name,
+                    "detector": detector,
+                    "tracker": tracker,
+                    "source": source,
+                    "gt": gt,
+                    "target": OUT / data_name / detector / tracker / stem,
+                    "overrides": overrides,
+                    "label": label,
+                })
+    return result
+
+
+def complete(job: dict) -> bool:
+    """Принимать только завершённый прогон с точно совпадающим конфигом."""
+    from applecounter.config import load_config
+
+    manifest_path = job["target"] / "run_manifest.json"
+    summary_path = job["target"] / "summary.json"
+    if not manifest_path.is_file() or not summary_path.is_file():
+        return False
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        expected = load_config(str(CONFIG), job["overrides"])
+        return (
+            manifest.get("status") == "complete"
+            and manifest.get("config") == expected.data
+            and summary.get("pipeline_version", 0) >= 2
+        )
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False
+
+
+def log(message: str) -> None:
+    line = f"{time.strftime('%Y-%m-%d %H:%M:%S')} | {message}"
+    print(line, flush=True)
+    LOG.parent.mkdir(parents=True, exist_ok=True)
+    with LOG.open("a", encoding="utf-8") as handle:
+        handle.write(line + "\n")
+
+
+def run(job: dict) -> tuple[int, float]:
+    cmd = [sys.executable, "-m", "applecounter", "run", "--config", str(CONFIG),
+           "--video", str(job["source"]), "--out", str(job["target"])]
+    if job["gt"] is not None:
+        cmd += ["--gt", str(job["gt"])]
+    for override in job["overrides"]:
+        cmd += ["--set", override]
     env = os.environ.copy()
     env["PYTHONPATH"] = str(ROOT / "src")
     env["PYTHONIOENCODING"] = "utf-8"
-    t0 = time.time()
-    proc = subprocess.run(cmd, cwd=str(ROOT), env=env)
-    return proc.returncode, time.time() - t0
+    started = time.time()
+    process = subprocess.run(cmd, cwd=str(ROOT), env=env, check=False)
+    return process.returncode, time.time() - started
 
 
-def log(msg: str) -> None:
-    line = f"{time.strftime('%H:%M:%S')} | {msg}"
-    print(line, flush=True)
-    with LOG.open("a", encoding="utf-8") as fh:
-        fh.write(line + "\n")
-
-
-def jobs(only: str) -> list[dict]:
-    out: list[dict] = []
-    vfc_videos = sorted(VIDEOS.rglob("*.mp4"))
-    assert len(vfc_videos) == 16, f"ожидалось 16 видео VFC, найдено {len(vfc_videos)}"
-
-    for combo, spec in COMBOS.items():
-        if only and only not in combo:
+def collect(jobs_list: list[dict]) -> None:
+    rows = []
+    for job in jobs_list:
+        path = job["target"] / "summary.json"
+        if not complete(job):
             continue
-        for v in vfc_videos:
-            stem = v.stem
-            if spec["detector"] == "yolo26s" and spec["tracker"] == "botsort":
-                # уже прогнано пакетным скриптом
-                target = OUT / f"vfc_{stem}"
-            else:
-                target = MATRIX / combo / stem
-            out.append({
-                "dataset": "vfc", "combo": combo, "video": v, "target": target,
-                "args": ["--set", f"video.rotate90={rotate_for(stem)}",
-                         "--set", "trees.method=segments",
-                         "--set", f"trees.segments_file={SFRAME}"],
-                "gt": None,
-            })
-
-    # MinneApple: только недостающие hsv+трекеры (остальные уже в outputs/)
-    for combo, spec in COMBOS.items():
-        if spec["detector"] != "hsv":
-            continue
-        if only and only not in combo:
-            continue
-        out.append({
-            "dataset": "minneapple", "combo": combo, "video": MN_VIDEO,
-            "target": OUT / f"minneapple_video_hsv_{spec['tracker']}",
-            "args": ["--set", "tracker.reid_max_dist=150"],
-            "gt": MN_GT,
+        summary = json.loads(path.read_text(encoding="utf-8"))
+        tracking = summary.get("tracking_metrics") or {}
+        counting = summary.get("count_metrics") or {}
+        rows.append({
+            "dataset": job["dataset"], "sequence": job["source"].stem,
+            "detector": job["detector"], "tracker": job["tracker"],
+            "frames": summary.get("frames"), "tracks": summary.get("total_apples"),
+            "count_unit": summary.get("count_unit"),
+            "mota": tracking.get("mota"), "idf1": tracking.get("idf1"),
+            "idsw": tracking.get("id_switches"),
+            "count_mae": counting.get("mae"),
+            "total_error_pct": counting.get("total_error_pct"),
+            "elapsed_sec": summary.get("elapsed_sec"),
+            "run_dir": str(job["target"]),
         })
-    return out
+    if rows:
+        OUT.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame(rows).to_csv(OUT / "matrix_results.csv", index=False)
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--only", default="")
-    args = ap.parse_args()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--dataset", choices=("vfc", "t1", "all"), default="vfc")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--only", default="", help="подстрока dataset/detector/tracker/video")
+    parser.add_argument("--max-frames", type=int, default=None)
+    parser.add_argument("--frame-stride", type=int, default=1)
+    parser.add_argument("--rerun", action="store_true", help="игнорировать валидный manifest")
+    args = parser.parse_args()
+    if args.frame_stride < 1 or (args.max_frames is not None and args.max_frames < 1):
+        parser.error("frame-stride и max-frames должны быть положительными")
 
-    todo = jobs(args.only)
-    pending = [j for j in todo if not (j["target"] / "summary.json").exists()]
-    log(f"всего задач: {len(todo)}, к выполнению: {len(pending)}")
+    all_jobs = jobs(args.dataset, args.only, args.max_frames, args.frame_stride)
+    pending = all_jobs if args.rerun else [job for job in all_jobs if not complete(job)]
+    log(f"выбрано {len(all_jobs)}; к выполнению {len(pending)}; старые outputs не используются")
     if args.dry_run:
-        for j in pending:
-            log(f"  [dry] {j['combo']:16} {j['video'].stem}")
+        for job in pending:
+            log(f"[dry] {job['label']} -> {job['target']}")
         return 0
 
-    n_done = 0
-    for j in pending:
-        n_done += 1
-        log(f"[{n_done}/{len(pending)}] {j['combo']} / {j['video'].stem}")
-        cmd = [sys.executable, "-m", "applecounter", "run",
-               "--video", str(j["video"]), "--out", str(j["target"]),
-               *detector_args(j["combo"].rsplit("_", 1)[0]),
-               "--set", f"tracker.name={j['combo'].rsplit('_', 1)[1]}",
-               "--set", "output.save_video=false",
-               "--set", "output.save_mosaic=false",
-               *j["args"]]
-        if j["gt"]:
-            cmd += ["--gt", str(j["gt"])]
-        code, secs = run_cmd(cmd)
-        if code != 0:
-            log(f"  ОШИБКА exit={code} ({secs:.0f} c)")
+    failures = 0
+    for index, job in enumerate(pending, 1):
+        log(f"[{index}/{len(pending)}] {job['label']}")
+        code, seconds = run(job)
+        if code != 0 or not complete(job):
+            failures += 1
+            log(f"ОШИБКА exit={code}, manifest_valid={complete(job)}, {seconds:.1f} с")
             continue
-        sj = json.loads((j["target"] / "summary.json").read_text(encoding="utf-8"))
-        log(f"  готово за {secs/60:.1f} мин: яблок {sj.get('total_apples')}, "
-            f"треков {sj.get('tracker', {}).get('created_tracks')}, "
-            f"двойной счёт {sj.get('tracker', {}).get('n_double_count_events')}")
-    log("матрица завершена")
-    return 0
+        summary = json.loads((job["target"] / "summary.json").read_text(encoding="utf-8"))
+        cache = summary.get("detection_cache", {})
+        log(f"готово: tracks={summary.get('total_apples')}, cache={cache.get('status')}, "
+            f"{seconds / 60:.1f} мин")
+        collect(all_jobs)
+    collect(all_jobs)
+    log(f"матрица завершена; ошибок {failures}")
+    return 1 if failures else 0
 
 
 if __name__ == "__main__":

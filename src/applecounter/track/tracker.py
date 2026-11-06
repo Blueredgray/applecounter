@@ -97,8 +97,6 @@ class Track:
         self.last_frame = int(frame_idx)
         self.n_obs += 1
         self.positions.append((int(frame_idx), box.copy()))
-        if len(self.positions) > 512:
-            self.positions = self.positions[-512:]
         if self.state == TrackState.TENTATIVE and self.hits >= self._n_init:
             self.state = TrackState.CONFIRMED
         elif self.state in (TrackState.LOST, TrackState.CONFIRMED):
@@ -131,6 +129,8 @@ def _assign(cost: np.ndarray, max_cost: float) -> List[Tuple[int, int]]:
 class MultiObjectTracker:
     """Комбинированный трекер: IoU (высокая/низкая уверенность) + re-ID по внешнему виду."""
 
+    coordinate_system = "world"
+
     def __init__(self, cfg: Config):
         t = cfg.get("tracker", {}) or {}
         self.high_conf = float(t.get("high_conf", 0.45))
@@ -147,6 +147,7 @@ class MultiObjectTracker:
         self.velocity_damping = float(t.get("velocity_damping", 0.7))
 
         self._tracks: Dict[int, Track] = {}
+        self._archive: Dict[int, Track] = {}
         self._next_id = 1
         self.n_id_switches = 0
         self.n_created = 0
@@ -154,7 +155,7 @@ class MultiObjectTracker:
     # -- утилиты --------------------------------------------------------
     @property
     def tracks(self) -> Dict[int, Track]:
-        return self._tracks
+        return {**self._archive, **self._tracks}
 
     def active_tracks(self) -> List[Track]:
         return [t for t in self._tracks.values() if t.active]
@@ -315,6 +316,8 @@ class MultiObjectTracker:
                     )
                 )
 
-        # чистка
+        # Keep removed tracks for final assignment and audit; only active tracking state is pruned.
+        removed = {tid: t for tid, t in self._tracks.items() if t.state == TrackState.REMOVED}
+        self._archive.update(removed)
         self._tracks = {tid: t for tid, t in self._tracks.items() if t.state != TrackState.REMOVED}
         return views

@@ -86,15 +86,18 @@ def test_build_tracker_factory():
     from applecounter.track import build_tracker
     from applecounter.track.botsort import BotSortTracker
     from applecounter.track.deepsort import DeepSortTracker
+    from applecounter.track.external import BoxMotTracker, DeepSortRealtimeTracker
 
     assert isinstance(build_tracker(Config()), MultiObjectTracker)
-    assert isinstance(build_tracker(Config({"tracker": {"name": "botsort"}})), BotSortTracker)
-    assert isinstance(build_tracker(Config({"tracker": {"name": "deepsort"}})), DeepSortTracker)
-    try:
+    assert isinstance(build_tracker(Config({"tracker": {"name": "botsort_lite"}})), BotSortTracker)
+    assert isinstance(build_tracker(Config({"tracker": {"name": "deepsort_lite"}})), DeepSortTracker)
+    bot_cfg = Config({"tracker": {
+        "name": "botsort", "use_embeddings": False, "cmc_enabled": False,
+    }})
+    assert isinstance(build_tracker(bot_cfg), BoxMotTracker)
+    assert isinstance(build_tracker(Config({"tracker": {"name": "deepsort"}})), DeepSortRealtimeTracker)
+    with pytest.raises(ValueError):
         build_tracker(Config({"tracker": {"name": "нет"}}))
-        assert False, "должен быть ValueError"
-    except ValueError:
-        pass
 
 
 def test_kalman_box_roundtrip():
@@ -106,9 +109,9 @@ def test_kalman_box_roundtrip():
     assert np.allclose(box, back)
 
 
-@pytest.mark.parametrize("name", ["botsort", "deepsort"])
+@pytest.mark.parametrize("name", ["botsort_lite", "deepsort_lite"])
 def test_alt_trackers_static_counted_once(name):
-    """BoT-SORT/DeepSORT: неподвижный объект начисляется один раз."""
+    """Лёгкие эталонные трекеры: неподвижный объект начисляется один раз."""
     from applecounter.track import build_tracker
 
     cfg = Config({"tracker": {"name": name}})
@@ -123,7 +126,7 @@ def test_alt_trackers_static_counted_once(name):
     assert next(iter(tr.tracks.values())).state == TrackState.CONFIRMED
 
 
-@pytest.mark.parametrize("name", ["botsort", "deepsort"])
+@pytest.mark.parametrize("name", ["botsort_lite", "deepsort_lite"])
 def test_alt_trackers_gap_keeps_id(name):
     """Краткий пропуск детекции (окклюзия) не должен менять id и считать заново."""
     from applecounter.track import build_tracker
@@ -145,10 +148,10 @@ def test_alt_trackers_gap_keeps_id(name):
 
 
 def test_botsort_low_conf_fills_track():
-    """BoT-SORT: низконадёжные детекции продолжают жизнь трека (ByteTrack-этап)."""
+    """BoT-SORT-lite: низконадёжные детекции продолжают жизнь трека."""
     from applecounter.track.botsort import BotSortTracker
 
-    cfg = Config({"tracker": {"name": "botsort", "max_age": 25}})
+    cfg = Config({"tracker": {"name": "botsort_lite", "max_age": 25}})
     tr = BotSortTracker(cfg)
     strong = np.array([_det(100, 100, conf=0.9)], dtype=np.float32)
     for f in range(3):
@@ -161,10 +164,10 @@ def test_botsort_low_conf_fills_track():
 
 
 def test_deepsort_ignores_low_conf():
-    """DeepSORT: классически низконадёжные детекции не участвуют в ассоциации."""
+    """DeepSORT-lite: низконадёжные детекции не участвуют в ассоциации."""
     from applecounter.track.deepsort import DeepSortTracker
 
-    cfg = Config({"tracker": {"name": "deepsort"}})
+    cfg = Config({"tracker": {"name": "deepsort_lite"}})
     tr = DeepSortTracker(cfg)
     strong = np.array([_det(100, 100, conf=0.9)], dtype=np.float32)
     for f in range(3):

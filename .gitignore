@@ -12,7 +12,11 @@ venv/
 data/raw/
 data/processed/
 data/synthetic/
+data/yield_history.csv  # непроверенный пример, не полевой эталон
 weights/
+models/
+external/VideoFruitCounting/
+applecounter3.zip
 *.pt
 *.onnx
 

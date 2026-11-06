@@ -100,6 +100,81 @@ class VideoReader:
         self.close()
 
 
+class ImageSequenceReader:
+    """VideoReader-compatible reader for a directory of sequentially named images."""
+
+    def __init__(self, path: str, stride: int = 1, resize: Optional[Tuple[int, int]] = None,
+                 rotate90: int = 0, max_frames: Optional[int] = None, fps: float = 30.0):
+        self.path = str(path)
+        root = Path(path)
+        if not root.is_dir():
+            raise FileNotFoundError(f"каталог кадров не найден: {path}")
+        image_root = root / "img1" if (root / "img1").is_dir() else root
+        extensions = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
+        self.files = sorted(p for p in image_root.iterdir() if p.suffix.lower() in extensions)
+        if not self.files:
+            raise ValueError(f"в {image_root} нет изображений")
+        self.stride = max(1, int(stride))
+        self.resize = tuple(resize) if resize else None
+        self.rotate90 = int(rotate90)
+        self.max_frames = max_frames
+        self._src_fps = float(fps)
+        self._src_count = len(self.files)
+        first = cv2.imread(str(self.files[0]))
+        if first is None:
+            raise IOError(f"не удалось прочитать {self.files[0]}")
+        self._src_h, self._src_w = first.shape[:2]
+
+    source_fps = property(lambda self: self._src_fps)
+    source_frame_count = property(lambda self: self._src_count)
+    fps = property(lambda self: self._src_fps / self.stride)
+
+    @property
+    def frame_count(self) -> int:
+        n = (self._src_count + self.stride - 1) // self.stride
+        return min(n, int(self.max_frames)) if self.max_frames is not None else n
+
+    @property
+    def frame_size(self) -> Tuple[int, int]:
+        w, h = self._src_w, self._src_h
+        if self.rotate90 in (1, -1):
+            w, h = h, w
+        if self.resize:
+            w, h = self.resize
+        return int(w), int(h)
+
+    def frames(self) -> Iterator[Tuple[int, np.ndarray]]:
+        emitted = 0
+        for index in range(0, len(self.files), self.stride):
+            frame = cv2.imread(str(self.files[index]))
+            if frame is None:
+                raise IOError(f"не удалось прочитать {self.files[index]}")
+            if self.rotate90 == 1:
+                frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+            elif self.rotate90 == -1:
+                frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+            if self.resize:
+                frame = cv2.resize(frame, self.resize, interpolation=cv2.INTER_AREA)
+            yield index, frame
+            emitted += 1
+            if self.max_frames is not None and emitted >= int(self.max_frames):
+                break
+
+    def close(self) -> None:
+        return None
+
+    def __enter__(self) -> "ImageSequenceReader":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+
+def open_frame_source(path: str, **kwargs):
+    """Open either a video file or a MOT-style image-sequence directory."""
+    return ImageSequenceReader(path, **kwargs) if Path(path).is_dir() else VideoReader(path, **kwargs)
+
+
 class VideoWriter:
     """Запись annotated-видео."""
 

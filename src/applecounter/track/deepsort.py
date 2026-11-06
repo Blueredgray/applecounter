@@ -1,12 +1,7 @@
-"""DeepSORT (Wojke et al., 2017) для подсчёта яблок.
+"""Лёгкий DeepSORT-подобный baseline с HSV-признаками, не эталонный DeepSORT.
 
-Классическая архитектура: Калмановский motion model + каскадная ассоциация:
-  1) пространственная (IoU-гейт по предсказанным КФ-боксам);
-  2) по внешнему виду — косинусное расстояние к галерее признаков трека.
-Низконадёжные детекции (< high_conf), как в оригинальном DeepSORT, не
-участвуют в ассоциации — отбор порога детектора. Вместо CNN-ReID
-используется HSV-гистограмма (документированное упрощение: нейросеть-ReID
-не ставится, чтобы метод работал без GPU-зависимостей).
+Сохранён для быстрых unit-тестов и отладки. Для исследовательских сравнений
+используйте ``tracker.name=deepsort`` — CNN-реализацию deep-sort-realtime.
 """
 
 from __future__ import annotations
@@ -26,7 +21,7 @@ GALLERY_SIZE = 8  # сколько последних признаков хра�
 class DeepSortTracker(KFTrackerBase):
     """DeepSORT: КФ + каскадная ассоциация (движение -> ReID-галерея)."""
 
-    name = "deepsort"
+    name = "deepsort_lite"
 
     def __init__(self, cfg):
         super().__init__(cfg)
@@ -76,7 +71,9 @@ class DeepSortTracker(KFTrackerBase):
                 cost = np.ones((len(remaining), len(free)), dtype=np.float32)
                 for i, tr in enumerate(remaining):
                     tr_center = geo.center(pred_boxes[tr.tid].reshape(1, 4))[0]
-                    gallery = self._gallery_mean(tr.tid) if tr.hist is None else tr.hist
+                    gallery = self._gallery_mean(tr.tid)
+                    if gallery is None:
+                        gallery = tr.hist
                     if gallery is None:
                         continue
                     for j, det_j in enumerate(free):
@@ -95,7 +92,6 @@ class DeepSortTracker(KFTrackerBase):
     # -- обновление галереи ---------------------------------------------------
     def update(self, frame_idx: int, detections, image=None, offset=(0.0, 0.0)):
         views = super().update(frame_idx, detections, image=image, offset=offset)
-        # признаки свежесопоставленных треков
         dets = np.asarray(detections, dtype=np.float32).reshape(-1, 6)
         if image is not None and len(dets) and self.use_appearance:
             screen = geo.shift(dets[:, :4], float(offset[0]), float(offset[1]))
@@ -103,11 +99,10 @@ class DeepSortTracker(KFTrackerBase):
             for view in views:
                 if not view.updated:
                     continue
-                # находим индекс детекции с тем же боксом, что и у трека
-                for i, box in enumerate(screen):
+                # view.box and the cached detections are both in world coordinates.
+                for i, box in enumerate(dets[:, :4]):
                     if np.allclose(box, np.asarray(view.box, dtype=np.float32), atol=1e-3):
                         self._add_feature(view.track_id, hists[i])
                         break
-        # чистка галерей удалённых треков
         self._gallery = {tid: f for tid, f in self._gallery.items() if tid in self._tracks}
         return views

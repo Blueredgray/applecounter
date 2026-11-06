@@ -64,6 +64,13 @@ class YieldForecast:
     ci_hi: float = 0.0
     params: dict = field(default_factory=dict)
 
+    @property
+    def estimate_type(self) -> str:
+        if self.method == "physical":
+            return "illustrative_unless_field_calibrated"
+        validation = self.params.get("validation", {}).get("method", "internal_only")
+        return f"field_calibrated_{validation}"
+
     def per_tree(self) -> Dict[int, float]:
         return {p.tree_id: p.mass_kg for p in self.points}
 
@@ -82,7 +89,7 @@ class YieldForecast:
 
 
 def forecast_counts(per_tree: Dict[int, int], cfg: Config) -> YieldForecast:
-    """Физический метод: count x visibility x mean_mass."""
+    """Оценить массу: physical использует count / visibility × mean_mass."""
     y = cfg.get("yield", {}) or {}
     method = str(y.get("method", "physical"))
     if method == "regression":
@@ -98,17 +105,22 @@ def _forecast_physical(per_tree: Dict[int, int], cfg: Config) -> YieldForecast:
     sigma_mass = float(y.get("mass_sigma_g", 25.0))
     z = z_for_confidence(float(y.get("confidence", 0.95)))
 
+    if not 0.0 < alpha <= 1.0:
+        raise ValueError("yield.visibility_factor — доля видимых плодов в интервале (0, 1]")
+    if mean_mass <= 0 or sigma_alpha < 0 or sigma_mass < 0:
+        raise ValueError("масса должна быть положительной, а стандартные отклонения — неотрицательными")
+
     points: List[YieldPoint] = []
     total = 0.0
     total_var = 0.0
     for tree_id, count in sorted(per_tree.items()):
         n = int(count)
-        mass = n * alpha * mean_mass / 1000.0
-        # дисперсия: Пуассоновский счёт + неопределённости массы и калибровки
+        mass = n * mean_mass / alpha / 1000.0
+        # Первый порядок: Пуассоновский счёт + неопределённости массы и видимости.
         var = (
-            (alpha * mean_mass / 1000.0) ** 2 * n
-            + (n * mean_mass / 1000.0) ** 2 * sigma_alpha ** 2
-            + (n * alpha / 1000.0) ** 2 * sigma_mass ** 2
+            (mean_mass / alpha / 1000.0) ** 2 * n
+            + (n * mean_mass / (alpha ** 2) / 1000.0) ** 2 * sigma_alpha ** 2
+            + (n / alpha / 1000.0) ** 2 * sigma_mass ** 2
         )
         sigma = math.sqrt(max(var, 0.0))
         points.append(
@@ -146,45 +158,81 @@ def _forecast_physical(per_tree: Dict[int, int], cfg: Config) -> YieldForecast:
 # ---------------------------------------------------------------------------
 # Регрессионный метод
 # ---------------------------------------------------------------------------
-def fit_regression(csv_path: str, ridge_lambda: float = 1e-3) -> dict:
-    """Ридж-регрессия mass_kg ~ a * count + b по CSV (tree_id,count,mass_kg)."""
+def _read_field_csv(csv_path: str) -> tuple[np.ndarray, np.ndarray]:
     df = pd.read_csv(csv_path)
     cols = {c.lower().strip(): c for c in df.columns}
     count_col = cols.get("count") or cols.get("n") or cols.get("fruit_count")
     mass_col = cols.get("mass_kg") or cols.get("kg") or cols.get("mass")
     if count_col is None or mass_col is None:
         raise ValueError(f"в {csv_path} нужны колонки count и mass_kg; найдено: {list(df.columns)}")
-
     x = df[count_col].to_numpy(dtype=float)
     y = df[mass_col].to_numpy(dtype=float)
-    if len(x) < 3:
-        raise ValueError("для регрессии нужно минимум 3 наблюдения")
+    valid = np.isfinite(x) & np.isfinite(y) & (x >= 0) & (y >= 0)
+    if not valid.all():
+        raise ValueError(f"в {csv_path} есть пустые, нечисловые или отрицательные count/mass_kg")
+    return x, y
 
+
+def _fit_ridge(x: np.ndarray, y: np.ndarray, lam: float) -> np.ndarray:
     X = np.stack([x, np.ones_like(x)], axis=1)
-    lam = float(ridge_lambda)
     penalty = np.diag([lam, 0.0])  # не регуляризируем сдвиг
-    beta = np.linalg.solve(X.T @ X + penalty, X.T @ y)
+    return np.linalg.solve(X.T @ X + penalty, X.T @ y)
 
-    pred = X @ beta
+
+def _regression_scores(y: np.ndarray, pred: np.ndarray) -> dict:
     ss_res = float(((y - pred) ** 2).sum())
     ss_tot = float(((y - y.mean()) ** 2).sum())
-    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
-    mae = float(np.abs(y - pred).mean())
-    rmse = float(np.sqrt(((y - pred) ** 2).mean()))
+    return {
+        "r2": 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0,
+        "mae": float(np.abs(y - pred).mean()),
+        "rmse": float(np.sqrt(((y - pred) ** 2).mean())),
+    }
+
+
+def fit_regression(csv_path: str, ridge_lambda: float = 1e-3,
+                   validation_csv: Optional[str] = None) -> dict:
+    """Ридж mass_kg ~ a*count+b с LOO или отдельным field holdout.
+
+    In-sample R²/MAE/RMSE сохранены как ``r2``/``mae``/``rmse``. Честные
+    оценки обобщения находятся в ``validation`` и не смешиваются с ними.
+    """
+    x, y = _read_field_csv(csv_path)
+    if len(x) < 3:
+        raise ValueError("для регрессии нужно минимум 3 наблюдения")
+    lam = float(ridge_lambda)
+    if lam < 0:
+        raise ValueError("ridge_lambda должен быть неотрицательным")
+    beta = _fit_ridge(x, y, lam)
+    X = np.stack([x, np.ones_like(x)], axis=1)
+    pred = X @ beta
+    train_scores = _regression_scores(y, pred)
 
     residuals = y - pred
     dof = max(1, len(x) - 2)
-    sigma2 = ss_res / dof
-    sigma = math.sqrt(sigma2)
+    sigma = math.sqrt(float((residuals ** 2).sum()) / dof)
+    if validation_csv:
+        xv, yv = _read_field_csv(validation_csv)
+        if len(xv) < 1:
+            raise ValueError("validation_csv пуст")
+        validation_pred = beta[0] * xv + beta[1]
+        validation = {
+            "method": "external_holdout", "n": int(len(xv)),
+            **_regression_scores(yv, validation_pred),
+        }
+    else:
+        loo_pred = []
+        for i in range(len(x)):
+            mask = np.arange(len(x)) != i
+            loo_beta = _fit_ridge(x[mask], y[mask], lam)
+            loo_pred.append(float(loo_beta[0] * x[i] + loo_beta[1]))
+        validation = {
+            "method": "leave_one_out", "n": int(len(x)),
+            **_regression_scores(y, np.asarray(loo_pred)),
+        }
     return {
-        "a": float(beta[0]),
-        "b": float(beta[1]),
-        "r2": r2,
-        "mae": mae,
-        "rmse": rmse,
-        "sigma_kg": sigma,
-        "n": int(len(x)),
-        "lambda": lam,
+        "a": float(beta[0]), "b": float(beta[1]),
+        **train_scores, "sigma_kg": sigma, "n": int(len(x)), "lambda": lam,
+        "validation": validation,
     }
 
 
@@ -193,7 +241,10 @@ def _forecast_regression(per_tree: Dict[int, int], cfg: Config) -> YieldForecast
     csv_path = y.get("regression_csv")
     if not csv_path:
         raise ValueError("yield.method=regression требует yield.regression_csv (tree_id,count,mass_kg)")
-    model = fit_regression(csv_path, float(y.get("ridge_lambda", 1e-3)))
+    model = fit_regression(
+        csv_path, float(y.get("ridge_lambda", 1e-3)),
+        validation_csv=y.get("validation_csv"),
+    )
     z = z_for_confidence(float(y.get("confidence", 0.95)))
 
     points: List[YieldPoint] = []

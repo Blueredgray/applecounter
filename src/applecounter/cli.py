@@ -112,6 +112,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--counts", required=True, help="counts.csv из прогона")
     p.add_argument("--out", default=None, help="каталог выхода (по умолчанию рядом со counts.csv)")
     p.add_argument("--regression-csv", default=None, help="полевой контроль (tree_id,count,mass_kg)")
+    p.add_argument("--validation-csv", default=None,
+                   help="независимый полевой holdout (tree_id,count,mass_kg)")
     _add_common(p)
     p.set_defaults(func=cmd_yield)
 
@@ -308,14 +310,16 @@ def cmd_run(args: argparse.Namespace, cfg: Config) -> int:
 def cmd_evaluate(args: argparse.Namespace, cfg: Config) -> int:
     from .pipeline import evaluate_run
 
-    out = args.out or args.run
-    result = evaluate_run(args.run, args.gt, cfg)
+    target = Path(args.out) if args.out else Path(args.run) / "eval.json"
+    if target.suffix.lower() != ".json":
+        target = target / "eval.json"
+    result = evaluate_run(args.run, args.gt, cfg, out_path=str(target))
     cm = result.get("count_metrics")
     if cm:
         print(f"MAE={cm['mae']:.2f}  RMSE={cm['rmse']:.2f}  "
               f"ошибка итога={cm['total_error_pct']:.1f}%  "
               f"в допуске {cm['within_tolerance']}/{cm['n_trees']}")
-    print(f"записано: {Path(out) / 'eval.json'}")
+    print(f"записано: {target}")
     return 0
 
 
@@ -329,6 +333,8 @@ def cmd_yield(args: argparse.Namespace, cfg: Config) -> int:
     if args.regression_csv:
         cfg.set("yield.method", "regression")
         cfg.set("yield.regression_csv", args.regression_csv)
+    if args.validation_csv:
+        cfg.set("yield.validation_csv", args.validation_csv)
     forecast = forecast_counts(per_tree, cfg)
     out_dir = Path(args.out) if args.out else counts_path.parent
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -337,6 +343,7 @@ def cmd_yield(args: argparse.Namespace, cfg: Config) -> int:
         json.dumps(
             {
                 "method": forecast.method,
+                "estimate_type": forecast.estimate_type,
                 "total_kg": forecast.total_kg,
                 "total_sigma": forecast.total_sigma,
                 "ci": [forecast.ci_lo, forecast.ci_hi],
@@ -349,8 +356,9 @@ def cmd_yield(args: argparse.Namespace, cfg: Config) -> int:
         ),
         encoding="utf-8",
     )
-    print(f"прогноз ({forecast.method}): {forecast.total_kg:.1f} кг "
-          f"[{forecast.ci_lo:.1f} … {forecast.ci_hi:.1f}] -> {out_dir / 'yield.json'}")
+    print(f"прогноз ({forecast.method}, {forecast.estimate_type}): "
+          f"{forecast.total_kg:.1f} кг [{forecast.ci_lo:.1f} … {forecast.ci_hi:.1f}] "
+          f"-> {out_dir / 'yield.json'}")
     return 0
 
 
@@ -361,6 +369,7 @@ def cmd_report(args: argparse.Namespace, cfg: Config) -> int:
 
     run = Path(args.run)
     summary = json.loads((run / "summary.json").read_text(encoding="utf-8"))
+    count_unit = str(summary.get("count_unit", "tree"))
     tracks = pd.read_csv(run / "tracks.csv")
     records = [
         TrackRecord(
@@ -391,15 +400,20 @@ def cmd_report(args: argparse.Namespace, cfg: Config) -> int:
     figures_dir = run / "figures"
     figures_dir.mkdir(exist_ok=True)
     figures = {}
-    figures["Подсчёт по деревьям"] = viz_report.fig_counts_per_tree(
-        count_result, None, figures_dir / "counts_per_tree.png").name
+    figures[f"Подсчёт по {viz_report.unit_label(count_unit, plural=True)}"] = \
+        viz_report.fig_counts_per_tree(
+            count_result, None, figures_dir / "counts_per_tree.png", count_unit=count_unit,
+        ).name
     if per_frame_ids:
         figures["Накопленный счёт"] = viz_report.fig_cumulative(
             per_frame_ids, figures_dir / "cumulative_count.png").name
     figures["Структура метода"] = viz_report.fig_pipeline(figures_dir / "pipeline.png").name
     if summary.get("count_metrics"):
-        figures["Ошибка по деревьям"] = viz_report.fig_error_per_tree(
-            summary["count_metrics"]["per_tree"], figures_dir / "error_per_tree.png").name
+        figures[f"Ошибка по {viz_report.unit_label(count_unit, plural=True)}"] = \
+            viz_report.fig_error_per_tree(
+                summary["count_metrics"]["per_tree"], figures_dir / "error_per_tree.png",
+                count_unit=count_unit,
+            ).name
 
     path = viz_report.write_report(
         run, summary, count_result,
@@ -413,13 +427,13 @@ def cmd_report(args: argparse.Namespace, cfg: Config) -> int:
 
 
 def cmd_retree(args: argparse.Namespace, cfg: Config) -> int:
-    """Пересчитать привязку яблок к деревьям по сохранённым артефактам.
+    """Пересчитать привязку яблок к единицам счёта по сохранённым артефактам.
 
     Не читает видео и не использует GPU: мировые боксы восстанавливаются из
     tracks_frame.csv (экранные) минус смещения камеры из per_frame.csv
-    (стабилизация — чистый сдвиг), карта деревьев строится заново
-    (в т.ч. subdivide на отдельные деревья), обновляются tracks.csv,
-    counts.csv, summary.json, yield.* и пересобирается отчёт.
+    (стабилизация — чистый сдвиг), карта единиц счёта строится заново,
+    обновляются tracks.csv, counts.csv, summary.json, при включённом
+    yield.enabled — yield.*; затем пересобирается отчёт.
     """
     from .counting.counter import TrackRecord
     from .trees.segment import build_tree_map
@@ -446,6 +460,11 @@ def cmd_retree(args: argparse.Namespace, cfg: Config) -> int:
         cfg.set("trees.method", "segments")
         if segments_file:
             cfg.set("trees.segments_file", str(segments_file))
+    # сохранить способ привязки исходного прогона: иначе VFC-прогон
+    # неожиданно вернулся бы к median_frame из конфигурации по умолчанию
+    cfg.set("trees.assignment", str(tree_meta0.get(
+        "assignment", cfg.get("trees.assignment", "median_frame"),
+    )))
 
     # мировые боксы детекций: экранные минус смещение камеры
     offs = pf.set_index("frame")[["cam_dx", "cam_dy"]]
@@ -462,25 +481,45 @@ def cmd_retree(args: argparse.Namespace, cfg: Config) -> int:
     points = np.column_stack([(det[:, 0] + det[:, 2]) * 0.5, (det[:, 1] + det[:, 3]) * 0.5])
     tree_map = build_tree_map(points, cfg, video_name=video_name, detections=det)
 
-    # переназначение треков: мировой центр трека (для sub_edges — по оси ряда)
-    centers = tracks[["x", "y"]].to_numpy(float)
-    mid = (tracks["first_frame"].to_numpy(int) + tracks["last_frame"].to_numpy(int)) // 2
-    tracks["tree_id"] = [
-        int(tree_map.assign_track(centers[i:i + 1], [int(mid[i])]))
-        for i in range(len(tracks))
-    ]
+    if tree_map.method == "segments" and cfg.get("trees.assignment") == "vfc_reference":
+        from .trees.vfc_assignment import assign_vfc_stretches
+
+        markers = [tree_map.frame_segments[0][0]] + [seg[1] for seg in tree_map.frame_segments]
+        observations = {
+            int(tid): [
+                (int(row.frame), np.asarray([row.x1, row.y1, row.x2, row.y2], dtype=float))
+                for row in group.itertuples(index=False)
+            ]
+            for tid, group in tf.groupby("track_id")
+        }
+        width = float(tree_meta0.get("image_width", 1080.0))
+        assigned, assignment_meta = assign_vfc_stretches(observations, markers, width, video_name)
+        tracks["tree_id"] = [int(assigned.get(int(tid), 0)) for tid in tracks["track_id"]]
+        tree_map.meta.update(assignment_meta)
+    else:
+        centers = tracks[["x", "y"]].to_numpy(float)
+        mid = (tracks["first_frame"].to_numpy(int) + tracks["last_frame"].to_numpy(int)) // 2
+        tracks["tree_id"] = [
+            int(tree_map.assign_track(centers[i:i + 1], [int(mid[i])]))
+            for i in range(len(tracks))
+        ]
     tracks.to_csv(tracks_path, index=False)
 
     vc = tracks["tree_id"].value_counts()
     per_tree = {int(k): int(v) for k, v in sorted(vc.items()) if int(k) > 0}
     unassigned = int((tracks["tree_id"] <= 0).sum())
-    pd.DataFrame([{"tree_id": k, "count": v} for k, v in per_tree.items()],
-                 columns=["tree_id", "count"]).to_csv(run / "counts.csv", index=False)
+    count_unit = "stretch" if tree_map.method in ("segments", "frames") else "tree"
+    pd.DataFrame(
+        [{"tree_id": k, "count": v, "unit": count_unit} for k, v in per_tree.items()],
+        columns=["tree_id", "count", "unit"],
+    ).to_csv(run / "counts.csv", index=False)
 
     summary["n_trees"] = tree_map.n_trees
     summary["tree_method"] = tree_map.method
+    summary["count_unit"] = count_unit
     summary["tree_meta"] = {
         **tree_map.meta,
+        "image_width": tree_map.meta.get("image_width", tree_meta0.get("image_width")),
         "boundaries": [float(b) for b in np.atleast_1d(tree_map.boundaries)],
         "origin": [float(v) for v in tree_map.origin],
         "direction": [float(v) for v in tree_map.direction],
@@ -489,11 +528,18 @@ def cmd_retree(args: argparse.Namespace, cfg: Config) -> int:
     summary["counts"] = {str(k): v for k, v in per_tree.items()}
     summary["unassigned"] = unassigned
 
-    # прогноз урожая по новой разбивке (total_apples не меняется)
-    try:
-        forecast = forecast_counts(per_tree, cfg)
+    # прогноз урожая по новой разбивке; при yield.enabled=false старые файлы
+    # удаляются, чтобы не выглядеть результатом новой привязки
+    forecast = None
+    if per_tree and bool(cfg.get("yield.enabled", True)):
+        try:
+            forecast = forecast_counts(per_tree, cfg)
+        except Exception as exc:
+            logger.warning("прогноз урожая не рассчитан: %s", exc)
+    if forecast is not None:
         summary["yield"] = {
             "method": forecast.method,
+            "estimate_type": forecast.estimate_type,
             "total_kg": round(forecast.total_kg, 2),
             "sigma_kg": round(forecast.total_sigma, 2),
             "ci_lo": round(forecast.ci_lo, 2),
@@ -505,6 +551,7 @@ def cmd_retree(args: argparse.Namespace, cfg: Config) -> int:
             json.dumps(
                 {
                     "method": forecast.method,
+                    "estimate_type": forecast.estimate_type,
                     "total_kg": forecast.total_kg,
                     "total_sigma": forecast.total_sigma,
                     "ci": [forecast.ci_lo, forecast.ci_hi],
@@ -517,9 +564,10 @@ def cmd_retree(args: argparse.Namespace, cfg: Config) -> int:
             ),
             encoding="utf-8",
         )
-    except Exception as exc:
-        logger.warning("прогноз урожая не рассчитан: %s", exc)
+    else:
         summary["yield"] = None
+        (run / "yield.csv").unlink(missing_ok=True)
+        (run / "yield.json").unlink(missing_ok=True)
 
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2, default=str),
                             encoding="utf-8")
@@ -556,7 +604,8 @@ def cmd_retree(args: argparse.Namespace, cfg: Config) -> int:
         print(f"мозаика: {run / 'mosaic.png'}")
 
     cmd_report(args, cfg)
-    print(f"деревьев: {tree_map.n_trees} | без привязки: {unassigned} | "
+    unit_word = "участков (stretch)" if count_unit == "stretch" else "деревьев"
+    print(f"{unit_word}: {tree_map.n_trees} | без привязки: {unassigned} | "
           f"уникальных яблок: {summary.get('total_apples')}")
     return 0
 
@@ -654,7 +703,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
     setup_logging("DEBUG" if args.verbose else "INFO")
     try:
-        cfg = load_config(args.config, args.set)
+        config_path = args.config
+        if config_path is None:
+            default_path = Path(__file__).resolve().parents[2] / "configs" / "default.yaml"
+            config_path = str(default_path) if default_path.exists() else None
+        cfg = load_config(config_path, args.set)
     except Exception as exc:
         logger.error("конфигурация: %s", exc)
         return 2

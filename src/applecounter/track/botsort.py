@@ -1,10 +1,7 @@
-"""BoT-SORT (Zhang et al., 2022) для подсчёта яблок.
+"""Лёгкий BoT-SORT-подобный baseline, не эталонная реализация BoT-SORT.
 
-BoT-SORT = ассоциация в два этапа (высоконадёжные / низконадёжные детекции,
-как в ByteTrack) + Калмановский motion model + этап re-ID по внешнему виду
-для непосопоставленных треков. Компенсация движения камеры (CMX) в нашей
-реализации выполняется заранее стабилизацией: детекции подаются в мировых
-координатах.
+Сохранён для быстрых unit-тестов и отладки. Для исследовательских сравнений
+используйте ``tracker.name=botsort`` — адаптер ``boxmot.BotSort``.
 """
 
 from __future__ import annotations
@@ -22,7 +19,7 @@ from .tracker import Track, _assign
 class BotSortTracker(KFTrackerBase):
     """BoT-SORT: КФ + two-stage (high/low conf) + re-ID cosine-гейт."""
 
-    name = "botsort"
+    name = "botsort_lite"
 
     def _associate(self, active: Sequence[Track], dets: np.ndarray,
                    det_hists: Sequence[Optional[np.ndarray]],

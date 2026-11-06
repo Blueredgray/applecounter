@@ -4,12 +4,12 @@ from applecounter.counting.counter import AppleCounter, TrackRecord
 from applecounter.trees.segment import TreeMap
 
 
-def _view(tid, box, conf=0.9, count_event=False, updated=True, state=None):
+def _view(tid, box, conf=0.9, count_event=False, updated=True, state=None, hits=2):
     from applecounter.track.tracker import TrackState, TrackView
 
     return TrackView(
         track_id=tid, box=tuple(box), conf=conf,
-        state=state or TrackState.CONFIRMED, hits=2,
+        state=state or TrackState.CONFIRMED, hits=hits,
         count_event=count_event, updated=updated,
     )
 
@@ -27,10 +27,20 @@ def test_count_once_and_no_double_events():
 
 def test_min_obs_filter():
     c = AppleCounter(min_obs=3)
-    c.update(0, [_view(1, [0, 0, 10, 10], count_event=True)])
-    c.update(1, [_view(1, [0, 0, 10, 10])])
+    c.update(0, [_view(1, [0, 0, 10, 10], count_event=True, hits=1)])
+    c.update(1, [_view(1, [0, 0, 10, 10], hits=1)])
     res = c.finalize(None, None, merge_dist=0)
-    assert res.total == 0  # слишком мало наблюдений
+    assert res.total == 0  # два фактических наблюдения вместо трёх
+
+
+def test_no_merge_of_simultaneous_tracks():
+    c = AppleCounter(min_obs=2)
+    c.update(0, [_view(1, [100, 100, 114, 114], count_event=True)])
+    c.update(1, [_view(1, [100, 100, 114, 114]),
+                 _view(2, [104, 102, 116, 114], count_event=True)])
+    c.update(2, [_view(2, [104, 102, 116, 114])])
+    res = c.finalize(None, None, merge_dist=14.0)
+    assert res.total == 2
 
 
 def test_merge_fragments_same_apple():

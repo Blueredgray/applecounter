@@ -62,3 +62,28 @@ def test_regression_requires_csv():
     cfg = Config({"yield": {"method": "regression", "regression_csv": None}})
     with pytest.raises(ValueError):
         forecast_counts({1: 10}, cfg)
+
+
+def test_visibility_fraction_corrects_hidden_fruit():
+    cfg = Config({"yield": {"method": "physical", "mean_mass_g": 200.0,
+                            "visibility_factor": 0.5, "visibility_sigma": 0.0,
+                            "mass_sigma_g": 0.0}})
+    forecast = forecast_counts({1: 10}, cfg)
+    assert forecast.total_kg == pytest.approx(4.0)
+    assert forecast.estimate_type == "illustrative_unless_field_calibrated"
+    with pytest.raises(ValueError):
+        forecast_counts({1: 10}, Config({"yield": {"visibility_factor": 0.0}}))
+
+
+def test_regression_external_holdout(tmp_path):
+    train = tmp_path / "train.csv"
+    train.write_text("tree_id,count,mass_kg\n1,10,2\n2,20,4\n3,30,6\n4,40,8\n",
+                     encoding="utf-8")
+    holdout = tmp_path / "holdout.csv"
+    holdout.write_text("tree_id,count,mass_kg\n5,15,3\n6,35,7\n", encoding="utf-8")
+    model = fit_regression(str(train), validation_csv=str(holdout))
+    assert model["validation"]["method"] == "external_holdout"
+    assert model["validation"]["n"] == 2
+    assert model["validation"]["mae"] == pytest.approx(0.0, abs=1e-3)
+    loo = fit_regression(str(train))
+    assert loo["validation"]["method"] == "leave_one_out"

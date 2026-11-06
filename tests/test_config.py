@@ -7,7 +7,8 @@ def test_defaults_present():
     cfg = Config()
     assert cfg.get("detector.name") == "hsv"
     assert cfg.get("tracker.n_init") == 2
-    assert cfg.get("counting.merge_dist") > 0
+    assert cfg.get("counting.merge_dist") == 0
+    assert cfg.get("trees.subdivide") is False
 
 
 def test_get_missing_returns_default():

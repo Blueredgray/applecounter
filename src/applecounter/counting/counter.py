@@ -98,7 +98,8 @@ class AppleCounter:
                 track_id=view.track_id,
                 first_frame=frame_idx,
                 last_frame=frame_idx,
-                n_obs=1,
+                # hits includes the tentative observations preceding confirmation.
+                n_obs=max(1, int(view.hits)),
                 world_center=center,
                 mean_conf=float(view.conf),
             )
@@ -183,6 +184,11 @@ class AppleCounter:
             center = np.asarray(rec.world_center, dtype=np.float64)
             target = None
             for rep in reps:
+                keep = rep[0]
+                # Simultaneously visible nearby fruits must never be merged.
+                overlaps_in_time = rec.first_frame <= keep.last_frame and keep.first_frame <= rec.last_frame
+                if overlaps_in_time:
+                    continue
                 if float(np.linalg.norm(rep[1] - center)) <= merge_dist:
                     target = rep
                     break

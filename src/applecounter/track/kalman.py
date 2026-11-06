@@ -91,6 +91,7 @@ class KFTrackerBase(ABC):
     """
 
     name = "kf"
+    coordinate_system = "world"
 
     def __init__(self, cfg: Config):
         t = cfg.get("tracker", {}) or {}
@@ -107,6 +108,7 @@ class KFTrackerBase(ABC):
 
         self.kf = KalmanBoxFilter()
         self._tracks: Dict[int, Track] = {}
+        self._archive: Dict[int, Track] = {}
         self._state: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
         self._next_id = 1
         self.n_id_switches = 0
@@ -114,7 +116,7 @@ class KFTrackerBase(ABC):
 
     @property
     def tracks(self) -> Dict[int, Track]:
-        return self._tracks
+        return {**self._archive, **self._tracks}
 
     def active_tracks(self) -> List[Track]:
         return [t for t in self._tracks.values() if t.active]
@@ -204,6 +206,8 @@ class KFTrackerBase(ABC):
                                        conf=track.score, state=track.state, hits=track.hits,
                                        count_event=False, updated=False))
 
+        removed = {tid: t for tid, t in self._tracks.items() if t.state == TrackState.REMOVED}
+        self._archive.update(removed)
         self._tracks = {tid: t for tid, t in self._tracks.items() if t.state != TrackState.REMOVED}
         self._state = {tid: s for tid, s in self._state.items() if tid in self._tracks}
         return views

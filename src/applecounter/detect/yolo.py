@@ -91,6 +91,14 @@ def train_yolo(cfg: Config, data_yaml: str, epochs: int = 80, model: str = "yolo
         device=None if cfg.get("project.device", "auto") == "auto" else cfg.get("project.device"),
         workers=int(cfg.get("train.workers", 4)),
         resume=bool(cfg.get("train.resume", False)),
+        optimizer=str(cfg.get("train.optimizer", "auto")),
+        lr0=float(cfg.get("train.lr0", 0.01)),
+        lrf=float(cfg.get("train.lrf", 0.01)),
+        momentum=float(cfg.get("train.momentum", 0.937)),
+        weight_decay=float(cfg.get("train.weight_decay", 0.0005)),
+        patience=int(cfg.get("train.patience", 50)),
+        close_mosaic=int(cfg.get("train.close_mosaic", 10)),
+        deterministic=bool(cfg.get("train.deterministic", True)),
     )
     best = Path(results.save_dir) / "weights" / "best.pt"
     logger.info("обучение завершено, лучшие веса: %s", best)
