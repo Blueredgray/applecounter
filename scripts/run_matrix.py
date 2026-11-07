@@ -228,7 +228,20 @@ def collect(jobs_list: list[dict]) -> None:
         })
     if rows:
         OUT.mkdir(parents=True, exist_ok=True)
-        pd.DataFrame(rows).to_csv(OUT / "matrix_results.csv", index=False)
+        results_path = OUT / "matrix_results.csv"
+        frame = pd.DataFrame(rows)
+        if results_path.is_file():
+            # Фазы запускаются отдельными вызовами run_matrix; старые строки
+            # (другие датасеты/детекторы) нужно сохранять, а не затирать.
+            key = ["dataset", "sequence", "detector", "tracker"]
+            previous = pd.read_csv(results_path)
+            previous = previous[
+                ~previous.set_index(key).index.isin(frame.set_index(key).index)
+            ]
+            frame = pd.concat([previous, frame], ignore_index=True)
+        frame.sort_values(["dataset", "sequence", "detector", "tracker"]).to_csv(
+            results_path, index=False
+        )
 
 
 def main() -> int:
