@@ -1,0 +1,7 @@
+dataset,detector,tracker,frames,gt_tracks,ap50,precision,recall,mota,idf1,idsw,unique_counted,track_s_per_frame
+"T1 (Villacres, Zenodo 7384297)",hsv,botsort,1290,939,0.0027,0.084,0.031,-0.1211,0.045,15,1497,0.1531
+"T1 (Villacres, Zenodo 7384297)",hsv,deepsort,1290,939,0.0027,0.084,0.031,-0.0368,0.0414,37,835,0.0996
+"T1 (Villacres, Zenodo 7384297)",yolo8n,botsort,1290,939,0.3869,0.7216,0.4303,0.2778,0.4681,81,545,0.3857
+"T1 (Villacres, Zenodo 7384297)",yolo8n,deepsort,1290,939,0.3869,0.7216,0.4303,0.2446,0.4117,272,675,0.1027
+"T1 (Villacres, Zenodo 7384297)",yolo26s,botsort,1290,939,0.3592,0.8092,0.3896,0.2616,0.4308,72,475,0.3131
+"T1 (Villacres, Zenodo 7384297)",yolo26s,deepsort,1290,939,0.3592,0.8092,0.3896,0.2145,0.3446,249,623,0.0926

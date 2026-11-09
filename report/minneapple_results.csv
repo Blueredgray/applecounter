@@ -1,0 +1,4 @@
+dataset,detector,n_images,n_gt_boxes,ap50,precision,recall,f1,count_mae_per_image,mean_pred,mean_gt
+MinneApple val (331 img),hsv,331,12285,0.0157,0.1303,0.1201,0.125,13.2417,34.1873,37.1148
+MinneApple val (331 img),yolo8n,331,12285,0.6556,0.7586,0.6982,0.7271,6.4169,34.1601,37.1148
+MinneApple val (331 img),yolo26s,331,12285,0.7754,0.7404,0.817,0.7768,6.6616,40.9547,37.1148
