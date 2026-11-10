@@ -9,6 +9,36 @@ BoT-SORT/DeepSORT/ByteTrack → уникальные track ID → участки
 > автоматически разбитых «деревьев» VFC нельзя переносить в статью: там не было
 > корректных постоянных GT ID и размеченных границ отдельных деревьев.
 
+## Статус проекта
+
+Рабочий исследовательский прототип под статью в журнал ВАК. Актуальные
+промежуточные результаты: `report/REPORT.pdf`.
+
+| Блок | Статус |
+|---|---|
+| Детекция: HSV / YOLOv8n@640 / YOLO26s@1280 | ✅ MinneApple val + T1 пройдены, таблицы в `report/` |
+| Трекинг: BoT-SORT vs DeepSORT на MOT-GT | ✅ T1 (1290 кадров, 939 GT-яблок), MOTA/IDF1/IDSW |
+| VFC: 16 видео × 3 детектора × 2 трекера | 🔄 HSV-фаза готова, YOLO-фазы считаются |
+| ByteTrack (этап соавтора) | ⏳ интерфейс готов (`tracker.name=bytetrack`), прогоны — партнёрский этап |
+| Этап 3: компенсация движения камеры, восстановление ID | ⏳ планируется |
+| Count GT для VFC | ❌ не планируется; выбор комбинации опирается на T1 и MinneApple (см. `report/REPORT.pdf`, раздел 4.1) |
+
+Текущий лучший результат: **YOLOv8n + BoT-SORT** (MOTA 0.278, IDF1 0.468 на T1);
+альтернатива с лучшей детекцией на MinneApple — **YOLO26s + BoT-SORT** (AP50 0.775).
+
+## Структура репозитория
+
+| Каталог | Содержимое |
+|---|---|
+| `src/applecounter/` | пакет: детекция, трекинг, счёт, деревья, метрики, CLI |
+| `configs/` | конфигурации по умолчанию и обучения |
+| `scripts/` | матрица прогонов, ночной сценарий, сборка отчёта |
+| `report/` | промежуточный отчёт: PDF/MD/TXT + таблицы CSV + рисунки |
+| `docs/` | протокол эксперимента, план прогонов, инструкция по добавлению трекера |
+| `paper/` | черновик статьи (LaTeX) |
+| `tests/` | 112 тестов |
+| `data/`, `weights/`, `outputs/` | не входят в git: скачиваются/генерируются/появляются после прогонов |
+
 ## Что реализовано
 
 - **Детекция:** HSV baseline и Ultralytics YOLO. Веса текущих экспериментов:
@@ -50,13 +80,43 @@ BoT-SORT/DeepSORT/ByteTrack → уникальные track ID → участки
 
 ## Установка
 
+Windows (PowerShell):
+
 ```powershell
 python -m venv .venv
 .venv\Scripts\python.exe -m pip install -e ".[dev,yolo,trackers,eval]"
 ```
 
-Проверено в проектном `.venv` на Python 3.12. `setuptools<81` нужен текущему
-`deep-sort-realtime` из-за `pkg_resources`.
+macOS / Linux:
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -e ".[dev,yolo,trackers,eval]"
+```
+
+Google Colab:
+
+```python
+!git clone <repo-url> && cd applecounter
+!pip install -e ".[dev,yolo,trackers,eval]"
+!python -m applecounter demo --out outputs/demo_colab
+```
+
+Проверено на Python 3.12 (Windows 10, venv). `setuptools<81` нужен текущему
+`deep-sort-realtime` из-за `pkg_resources`. Для GPU ставьте PyTorch с нужным
+CUDA-индексом (Colab: стандартная сборка cu12x ставится автоматически):
+`pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126`.
+
+## Данные (не входят в репозиторий)
+
+| Датасет | Где взять | Что класть |
+|---|---|---|
+| MinneApple | публичный датасет (Henningson & Smith) | кадры + разметка → `applecounter prepare` |
+| T1 (MOT) | [Zenodo 7384297](https://zenodo.org/records/7384297), Villacres et al. 2022 | `img1/` + `gt/gt.txt` в `data/raw/videofruit/T1/` |
+| VideoFruitCounting | [GitHub imatge-upc/VideoFruitCounting](https://github.com/imatge-upc/VideoFruitCounting) | 16 MP4 + `stretch_sframe.csv` |
+
+Веса экспериментов (обучены на MinneApple, см. `report/`) по запросу у авторов;
+переобучить можно командой `applecounter train`.
 
 ## Быстрый запуск
 
@@ -101,6 +161,28 @@ $env:PYTHONIOENCODING = "utf-8"
 Для основной матрицы: `counting.min_obs=1`, `counting.merge_dist=0`,
 `trees.subdivide=false`, `yield.enabled=false`. Это сравнение сырых
 подтверждённых треков, а не доказательство числа физических яблок.
+
+Все скрипты матрицы кросс-платформенны (Python 3.10+). PowerShell-обёртки
+(`scripts/*.ps1`) — только удобство; эквивалентный запуск на macOS/Linux:
+
+```bash
+export PYTHONPATH="$PWD/src" PYTHONIOENCODING=utf-8
+python scripts/run_matrix.py --dataset t1 --only "/bytetrack/"
+```
+
+## Этап соавтора: ByteTrack
+
+ByteTrack подключён через тот же интерфейс, что BoT-SORT и DeepSORT
+(`boxmot.ByteTrack`, см. `src/applecounter/track/external.py` и
+`docs/adding_a_tracker.md`). Этап соавтора, не требующий правок ядра:
+
+1. Установить зависимости (`pip install -e ".[yolo,trackers,eval]"`) — на Mac
+   или в Colab, код не меняется.
+2. Добавить `bytetrack` в матрицу `scripts/run_matrix.py` рядом с `botsort`/
+   `deepsort` — кэш детекции общий, YOLO заново не считается.
+3. Прогнать T1 (валидация по MOT-GT, сопоставимо с нашей таблицей) и VFC.
+4. Сравнить MOTA/IDF1/IDSW с `report/t1_results.csv` и дописать таблицу
+   статьи — единицы измерения и протокол идентичны.
 
 ## VFC и stretch
 

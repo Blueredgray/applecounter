@@ -3,12 +3,16 @@
 # Перезапуск без ручной очистки безопасен: run_matrix.py возобновляет только валидные задачи.
 
 $ErrorActionPreference = 'Continue'
-$Root = 'G:\opencode\soft\applecounter3'
+$Root = Split-Path $PSScriptRoot -Parent
 Set-Location $Root
 
 $env:PYTHONPATH = Join-Path $Root 'src'
 $env:PYTHONIOENCODING = 'utf-8'
-$Python = Join-Path $Root '.venv\Scripts\python.exe'
+if ($IsMacOS -or $IsLinux) {
+    $Python = Join-Path $Root '.venv/bin/python'
+} else {
+    $Python = Join-Path $Root '.venv\Scripts\python.exe'
+}
 $OuterLog = Join-Path $Root 'outputs\overnight_experiments.log'
 
 function Write-OuterLog([string] $Message) {
