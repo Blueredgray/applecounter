@@ -12,7 +12,8 @@ venv/
 data/raw/
 data/processed/
 data/synthetic/
-data/yield_history.csv  # непроверенный пример, не полевой эталон
+# непроверенный пример, не полевой эталон
+data/yield_history.csv
 weights/
 models/
 external/VideoFruitCounting/
