@@ -14,6 +14,25 @@ import numpy as np
 from .tracker import Track, TrackState, TrackView
 
 
+def _valid_detections(dets: np.ndarray) -> np.ndarray:
+    """Отбросить строки с нефинитными или вырожденными боксами.
+
+    YOLO может выдать нулевой по ширине/высоте бокс на самом краю кадра;
+    boxmot валидирует x2 > x1, y2 > y1 и падает ValueError. DeepSORT такие
+    боксы молча проглатывает, поэтому дефект заметен только на BoT-SORT.
+    """
+    if len(dets) == 0:
+        return dets
+    coords = dets[:, :4]
+    ok = (
+        np.isfinite(coords).all(axis=1)
+        & np.isfinite(dets[:, 4])
+        & (coords[:, 2] > coords[:, 0])
+        & (coords[:, 3] > coords[:, 1])
+    )
+    return dets[ok]
+
+
 class ExternalTracker:
     """Common TrackView interface for third-party tracking-by-detection engines."""
 
@@ -121,7 +140,7 @@ class BoxMotTracker(ExternalTracker):
             raise ValueError(name)
 
     def update(self, frame_idx: int, detections, image=None, offset=(0.0, 0.0)):
-        dets = np.asarray(detections, dtype=np.float32).reshape(-1, 6)
+        dets = _valid_detections(np.asarray(detections, dtype=np.float32).reshape(-1, 6))
         output = self.tracker.update(dets, image)
         if output is None:
             return []
@@ -164,7 +183,7 @@ class DeepSortRealtimeTracker(ExternalTracker):
     def update(self, frame_idx: int, detections, image=None, offset=(0.0, 0.0)):
         if image is None:
             raise ValueError("DeepSORT requires the current image for CNN appearance embeddings")
-        dets = np.asarray(detections, dtype=np.float32).reshape(-1, 6)
+        dets = _valid_detections(np.asarray(detections, dtype=np.float32).reshape(-1, 6))
         high = float(self.cfg.get("tracker.high_conf", 0.45))
         raw = []
         for row in dets:

@@ -100,6 +100,34 @@ def test_build_tracker_factory():
         build_tracker(Config({"tracker": {"name": "нет"}}))
 
 
+def test_external_tracker_tolerates_degenerate_detections():
+    """boxmot падает ValueError на x2==x1; адаптер обязан такие боксы отбрасывать.
+
+    Регрессия: VFC 210928_082124, кадр 4208 — YOLO выдала бокс нулевой
+    ширины ровно на правом краю кадра, прогон vfc/yolo26s/botsort падал.
+    """
+    from applecounter.track.external import BoxMotTracker, _valid_detections
+
+    dets = np.array([
+        [1080.0, 0.4, 1080.0, 78.0, 0.26, 0.0],  # нулевая ширина, край кадра
+        [50.0, 60.0, 90.0, 100.0, 0.9, 0.0],      # нормальный бокс
+        [np.nan, 0.0, 10.0, 10.0, 0.8, 0.0],      # NaN в координатах
+    ], dtype=np.float32)
+    kept = _valid_detections(dets)
+    assert len(kept) == 1
+    assert kept[0, 4] == pytest.approx(0.9)
+
+    cfg = Config({"tracker": {
+        "name": "botsort", "use_embeddings": False, "cmc_enabled": False,
+    }})
+    tracker = BoxMotTracker(cfg, "botsort")
+    image = np.zeros((480, 640, 3), dtype=np.uint8)
+    tracker.update(0, dets, image=image)
+    views = tracker.update(1, dets, image=image)
+    assert len(views) == 1
+    assert np.allclose(views[0].box, (50.0, 60.0, 90.0, 100.0), atol=1e-3)
+
+
 def test_kalman_box_roundtrip():
     from applecounter.track.kalman import KalmanBoxFilter
 
